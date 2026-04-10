@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 const admin = require('firebase-admin');
 const { google } = require('googleapis');
 require('dotenv').config();
@@ -9,8 +10,17 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Security: Global Rate Limiting
+const globalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 500, // Limit each IP to 500 requests per window
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests from this IP, please try again after 15 minutes' }
+});
+app.use(globalLimiter);
+
 // Security: Helmet for HTTP Headers
-// Enhanced CSP for Google Maps and Fonts
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
@@ -25,11 +35,16 @@ app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
 
-// CORS Configuration
-app.use(cors({ origin: '*', methods: ['GET', 'POST'] }));
+// CORS Configuration - Restrict to trusted origins in production
+const corsOptions = {
+  origin: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : '*',
+  methods: ['GET', 'POST'],
+  credentials: true
+};
+app.use(cors(corsOptions));
 
 // Body Parsers & Sanitization
-app.use(express.json({ limit: '10kb' })); // Limit body size to prevent DoS
+app.use(express.json({ limit: '10kb' })); 
 app.use(express.static('public'));
 
 /**
@@ -59,16 +74,10 @@ const calendar = google.calendar({ version: 'v3', auth });
 const venueRoutes = require('./src/routes/venueRoutes');
 app.use('/api/venue', venueRoutes);
 
-// Compatibility redirect (old endpoints to new version/api)
-app.get(['/crowd', '/queue', '/route', '/alert'], (req, res) => {
-    res.redirect(301, `/api/venue${req.path}`);
-});
-
 /**
  * 📅 Calendar Sync (Specific Route)
- * POST used for state modification
  */
-app.post('/api/calendar/sync', async (req, res) => {
+app.post('/api/calendar/sync', async (req, res, next) => {
   const event = {
     summary: 'Stadium Event Day Optimizer',
     location: 'Gate B, Sports Venue',
@@ -84,6 +93,7 @@ app.post('/api/calendar/sync', async (req, res) => {
     });
     res.json({ success: true, link: response.data.htmlLink });
   } catch (err) {
+    // Graceful fallback for demo/simulation
     res.status(200).json({ 
         error: "Notice: Sync is in simulated mode (no service account).", 
         mockLink: "https://calendar.google.com/event?id=venue_crowd_demo" 
@@ -91,10 +101,21 @@ app.post('/api/calendar/sync', async (req, res) => {
   }
 });
 
-// Global Error Handler
+// Global Error Handler - Standardized JSON output
 app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({ error: 'Something went wrong inside the venue engine!' });
+    const statusCode = err.status || 500;
+    const googleService = require('./src/services/googleService');
+    
+    googleService.logEvent('ERROR', err.message, { 
+      stack: process.env.NODE_ENV === 'production' ? null : err.stack,
+      path: req.path
+    });
+
+    res.status(statusCode).json({ 
+      error: 'Venue Engine Exception',
+      message: err.message,
+      trackingId: Date.now() 
+    });
 });
 
 if (require.main === module) {

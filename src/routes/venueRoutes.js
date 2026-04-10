@@ -6,6 +6,7 @@ const rateLimit = require('express-rate-limit');
 // Services
 const navService = require('../services/navigationService');
 const queueService = require('../services/queueService');
+const googleService = require('../services/googleService');
 const { zones } = require('../data/venueData');
 
 // Security: Rate Limit for API endpoints (100 requests per 15 minutes)
@@ -71,6 +72,23 @@ router.get('/route',
     }
     
     res.json(result);
+});
+
+/**
+ * 4. Google Assistant AI: Natural Language Query
+ * Uses Gemini API for contextual feedback
+ */
+router.get('/assistant',
+  apiLimiter,
+  query('q').isString().notEmpty().escape(),
+  validate,
+  async (req, res) => {
+    try {
+        const result = await googleService.analyzeVenueNeeds(req.query.q);
+        res.json(result);
+    } catch (err) {
+        res.status(500).json({ error: "AI Assistant failed" });
+    }
 });
 
 /**
